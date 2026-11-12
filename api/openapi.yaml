@@ -1,0 +1,1075 @@
+openapi: 3.0.3
+info:
+  title: Veyro Backend API
+  version: 0.3.0
+  description: |
+    Implemented API surface for Phase 3 (identity, workspaces, onboarding,
+    invitations, limited platform administration). All routes are under
+    /api/v1 unless noted otherwise. Errors use the shared JSON error envelope.
+servers:
+  - url: http://localhost:8080
+tags:
+  - name: Health
+  - name: Auth
+  - name: Workspaces
+  - name: Members
+  - name: Roles
+  - name: Invitations
+  - name: Company
+  - name: Platform
+
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Liveness check
+      security: []
+      responses:
+        "200":
+          description: Service is alive
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  service: { type: string }
+                  status: { type: string }
+  /ready:
+    get:
+      tags: [Health]
+      summary: Database readiness check
+      security: []
+      responses:
+        "200":
+          description: Database is reachable
+        "503":
+          description: Database is not available
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/v1/auth/register:
+    post:
+      tags: [Auth]
+      summary: Register an account
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RegisterRequest" }
+      responses:
+        "201":
+          description: Account created; verification email queued
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Message" }
+        "409":
+          description: Email already registered
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/v1/auth/verify-email:
+    post:
+      tags: [Auth]
+      summary: Verify an email address with a single-use token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TokenRequest" }
+      responses:
+        "200":
+          description: Email verified
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Message" }
+        "400":
+          description: Invalid or expired token
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/v1/auth/verify-email/resend:
+    post:
+      tags: [Auth]
+      summary: Resend the verification email
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EmailRequest" }
+      responses:
+        "202":
+          description: Email queued if the account needs verification
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: Log in and start a session
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LoginRequest" }
+      responses:
+        "200":
+          description: Session created; refresh and CSRF cookies may also be set
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthResult" }
+        "401":
+          description: Invalid credentials or unverified email
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429":
+          description: Too many attempts
+  /api/v1/auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Rotate the refresh token and issue a new access token
+      security: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refresh_token: { type: string }
+      parameters:
+        - $ref: "#/components/parameters/CsrfToken"
+      responses:
+        "200":
+          description: New token pair
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthResult" }
+        "401":
+          description: Invalid, expired or reused refresh token
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/v1/auth/logout:
+    post:
+      tags: [Auth]
+      summary: Revoke the current session
+      description: Requires a valid access token. Clears the refresh and CSRF cookies.
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204":
+          description: Session revoked and cookies cleared
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/v1/auth/password/forgot:
+    post:
+      tags: [Auth]
+      summary: Request a password reset link
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EmailRequest" }
+      responses:
+        "202":
+          description: Request accepted; response does not reveal account existence
+  /api/v1/auth/password/reset:
+    post:
+      tags: [Auth]
+      summary: Reset a password with a single-use token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, new_password]
+              properties:
+                token: { type: string }
+                new_password: { type: string, format: password }
+      responses:
+        "200":
+          description: Password changed; all sessions revoked
+        "400":
+          description: Invalid or expired token
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/v1/auth/me:
+    get:
+      tags: [Auth]
+      summary: Current user profile
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Current user
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: { $ref: "#/components/schemas/User" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/v1/auth/logout-all:
+    post:
+      tags: [Auth]
+      summary: Revoke every session for the current user
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: All sessions revoked }
+  /api/v1/auth/sessions:
+    get:
+      tags: [Auth]
+      summary: List active sessions
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Active sessions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessions:
+                    type: array
+                    items: { $ref: "#/components/schemas/Session" }
+  /api/v1/auth/sessions/{sessionID}:
+    delete:
+      tags: [Auth]
+      summary: Revoke one session
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/SessionID"
+      responses:
+        "204": { description: Session revoked }
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/workspaces:
+    post:
+      tags: [Workspaces]
+      summary: Create a workspace (created with an owner membership)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateWorkspaceRequest" }
+      responses:
+        "201":
+          description: Workspace created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkspaceDetail" }
+        "409":
+          description: Slug already in use
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    get:
+      tags: [Workspaces]
+      summary: List workspaces for the current user
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Workspaces
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  workspaces:
+                    type: array
+                    items: { $ref: "#/components/schemas/Workspace" }
+  /api/v1/workspaces/{tenantID}:
+    parameters:
+      - $ref: "#/components/parameters/TenantID"
+    get:
+      tags: [Workspaces]
+      summary: Get a workspace
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Workspace
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkspaceDetail" }
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      tags: [Workspaces]
+      summary: Update workspace profile
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateWorkspaceRequest" }
+      responses:
+        "200":
+          description: Updated workspace
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WorkspaceDetail" }
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /api/v1/workspaces/{tenantID}/overview:
+    parameters:
+      - $ref: "#/components/parameters/TenantID"
+    get:
+      tags: [Workspaces]
+      summary: Workspace overview including onboarding readiness
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Overview
+          content:
+            application/json:
+              schema: { type: object }
+  /api/v1/workspaces/{tenantID}/onboarding/status:
+    parameters:
+      - $ref: "#/components/parameters/TenantID"
+    get:
+      tags: [Company]
+      summary: Onboarding checklist and readiness
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Checklist
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OnboardingStatus" }
+  /api/v1/workspaces/{tenantID}/members:
+    parameters:
+      - $ref: "#/components/parameters/TenantID"
+    get:
+      tags: [Members]
+      summary: List workspace members
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Members
+          content:
+            application/json:
+              schema: { type: object }
+  /api/v1/workspaces/{tenantID}/members/{membershipID}:
+    parameters:
+      - $ref: "#/components/parameters/TenantID"
+      - $ref: "#/components/parameters/MembershipID"
+    get:
+      tags: [Members]
+      summary: Get a member
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Member
+          content:
+            application/json:
+              schema: { type: object }
+    patch:
+      tags: [Members]
+      summary: Update a member's status or profile
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200": { description: Updated member }
+    delete:
+      tags: [Members]
+      summary: Remove a member
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: Member removed }
+  /api/v1/workspaces/{tenantID}/members/{membershipID}/roles:
+    parameters:
+      - $ref: "#/components/parameters/TenantID"
+      - $ref: "#/components/parameters/MembershipID"
+    get:
+      tags: [Members]
+      summary: List role assignments for a member
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Assignments }
+    post:
+      tags: [Members]
+      summary: Assign a role to a member
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RoleAssignmentRequest" }
+      responses:
+        "201": { description: Role assigned }
+  /api/v1/workspaces/{tenantID}/members/{membershipID}/roles/{assignmentID}:
+    parameters:
+      - $ref: "#/components/parameters/TenantID"
+      - $ref: "#/components/parameters/MembershipID"
+      - name: assignmentID
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    delete:
+      tags: [Members]
+      summary: Revoke a role assignment
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: Assignment revoked }
+  /api/v1/workspaces/{tenantID}/roles:
+    parameters:
+      - $ref: "#/components/parameters/TenantID"
+    get:
+      tags: [Roles]
+      summary: List roles
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Roles
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  roles:
+                    type: array
+                    items: { $ref: "#/components/schemas/Role" }
+    post:
+      tags: [Roles]
+      summary: Create a custom role
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RoleRequest" }
+      responses:
+        "201": { description: Role created }
+  /api/v1/workspaces/{tenantID}/roles/{roleID}:
+    parameters:
+      - $ref: "#/components/parameters/TenantID"
+      - name: roleID
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [Roles]
+      summary: Get a role
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Role }
+    patch:
+      tags: [Roles]
+      summary: Update a role's name, description or permissions
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RoleRequest" }
+      responses:
+        "200": { description: Updated role }
+  /api/v1/workspaces/{tenantID}/permissions:
+    parameters:
+      - $ref: "#/components/parameters/TenantID"
+    get:
+      tags: [Roles]
+      summary: List the permission catalogue
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Permissions }
+
+  /api/v1/invitations/accept:
+    post:
+      tags: [Invitations]
+      summary: Accept a staff invitation (email must match the signed-in user)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TokenRequest" }
+      responses:
+        "200":
+          description: Membership and role assignment created
+          content:
+            application/json:
+              schema: { type: object }
+        "400":
+          description: Invalid, expired or already used invitation
+        "403":
+          description: Invitation email does not match the user
+  /api/v1/workspaces/{tenantID}/invitations:
+    parameters:
+      - $ref: "#/components/parameters/TenantID"
+    get:
+      tags: [Invitations]
+      summary: List invitations
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Invitations
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  invitations:
+                    type: array
+                    items: { $ref: "#/components/schemas/Invitation" }
+    post:
+      tags: [Invitations]
+      summary: Invite a staff member
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateInvitationRequest" }
+      responses:
+        "201":
+          description: Invitation created and email queued
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Invitation" }
+        "409":
+          description: Pending invitation already exists for this email
+  /api/v1/workspaces/{tenantID}/invitations/{invitationID}/resend:
+    parameters:
+      - $ref: "#/components/parameters/TenantID"
+      - name: invitationID
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [Invitations]
+      summary: Regenerate the token and resend the invitation email
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Invitation resent }
+  /api/v1/workspaces/{tenantID}/invitations/{invitationID}:
+    parameters:
+      - $ref: "#/components/parameters/TenantID"
+      - name: invitationID
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    delete:
+      tags: [Invitations]
+      summary: Revoke a pending invitation
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: Invitation revoked }
+
+  /api/v1/workspaces/{tenantID}/companies:
+    parameters:
+      - $ref: "#/components/parameters/TenantID"
+    post:
+      tags: [Company]
+      summary: Create the company and initialize all onboarding defaults in one transaction
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateCompanyRequest" }
+      responses:
+        "201":
+          description: Company and default tax registration created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CompanyResult" }
+        "422":
+          description: Validation failed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+  /api/v1/workspaces/{tenantID}/company:
+    parameters:
+      - $ref: "#/components/parameters/TenantID"
+    get:
+      tags: [Company]
+      summary: Get the primary company
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Company
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  company: { $ref: "#/components/schemas/Company" }
+    patch:
+      tags: [Company]
+      summary: Update company profile with optimistic concurrency
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateCompanyRequest" }
+      responses:
+        "200":
+          description: Updated company
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  company: { $ref: "#/components/schemas/Company" }
+        "409":
+          description: Row version conflict
+  /api/v1/workspaces/{tenantID}/company/settings:
+    parameters:
+      - $ref: "#/components/parameters/TenantID"
+    get:
+      tags: [Company]
+      summary: Get company settings
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Settings
+          content:
+            application/json:
+              schema: { type: object }
+    patch:
+      tags: [Company]
+      summary: Update company settings (requires row_version)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200": { description: Updated settings }
+        "409":
+          description: Row version conflict
+  /api/v1/workspaces/{tenantID}/company/tax-registrations:
+    parameters:
+      - $ref: "#/components/parameters/TenantID"
+    get:
+      tags: [Company]
+      summary: List GST registrations
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Registrations }
+    post:
+      tags: [Company]
+      summary: Add a GST registration
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TaxRegistrationRequest" }
+      responses:
+        "201":
+          description: Registration created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TaxRegistration" }
+  /api/v1/workspaces/{tenantID}/company/tax-registrations/{registrationID}:
+    parameters:
+      - $ref: "#/components/parameters/TenantID"
+      - name: registrationID
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [Company]
+      summary: Update a GST registration
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TaxRegistrationRequest" }
+      responses:
+        "200": { description: Updated registration }
+
+  /api/v1/platform/health:
+    get:
+      tags: [Platform]
+      summary: Platform administration health and outbox depth
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Health }
+        "403": { description: User is not a configured platform administrator }
+  /api/v1/platform/tenants:
+    get:
+      tags: [Platform]
+      summary: List tenants
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: query
+          in: query
+          schema: { type: string }
+        - name: status
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100 }
+        - name: offset
+          in: query
+          schema: { type: integer, minimum: 0 }
+      responses:
+        "200":
+          description: Tenants
+          content:
+            application/json:
+              schema: { type: object }
+  /api/v1/platform/tenants/{tenantID}:
+    parameters:
+      - $ref: "#/components/parameters/TenantID"
+    get:
+      tags: [Platform]
+      summary: Get tenant details
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Tenant detail
+          content:
+            application/json:
+              schema: { type: object }
+    patch:
+      tags: [Platform]
+      summary: Activate or suspend a tenant
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [active, suspended] }
+      responses:
+        "200": { description: Updated tenant }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque access token
+  parameters:
+    TenantID:
+      name: tenantID
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    MembershipID:
+      name: membershipID
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    SessionID:
+      name: sessionID
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: Client-generated key. Repeating the same key returns the original result.
+      schema: { type: string, minLength: 8, maxLength: 128 }
+    CsrfToken:
+      name: X-CSRF-Token
+      in: header
+      required: false
+      description: Required when refreshing with the HttpOnly refresh cookie.
+      schema: { type: string }
+  responses:
+    Unauthorized:
+      description: Missing, invalid or expired access token
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: The caller lacks the required permission
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: Resource not found in the caller's workspace
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+            fields:
+              type: object
+              additionalProperties: { type: string }
+    Message:
+      type: object
+      properties:
+        message: { type: string }
+    TokenRequest:
+      type: object
+      required: [token]
+      properties:
+        token: { type: string }
+    EmailRequest:
+      type: object
+      required: [email]
+      properties:
+        email: { type: string, format: email }
+    RegisterRequest:
+      type: object
+      required: [full_name, email, password]
+      properties:
+        full_name: { type: string, minLength: 1, maxLength: 120 }
+        email: { type: string, format: email }
+        password: { type: string, format: password, minLength: 10 }
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, format: password }
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        full_name: { type: string }
+        email: { type: string, format: email }
+        email_verified: { type: boolean }
+    AuthResult:
+      type: object
+      properties:
+        access_token: { type: string }
+        refresh_token: { type: string }
+        token_type: { type: string, example: Bearer }
+        expires_in: { type: integer }
+        refresh_expires_in: { type: integer }
+        session_id: { type: string, format: uuid }
+        user: { $ref: "#/components/schemas/User" }
+    Session:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        last_used_at: { type: string, format: date-time, nullable: true }
+        expires_at: { type: string, format: date-time }
+        ip_address: { type: string, nullable: true }
+        user_agent: { type: string, nullable: true }
+    Workspace:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        slug: { type: string }
+        status: { type: string, enum: [active, suspended] }
+        timezone: { type: string }
+        locale: { type: string }
+        membership_id: { type: string, format: uuid }
+        roles:
+          type: array
+          items: { type: string }
+        created_at: { type: string, format: date-time }
+    WorkspaceDetail:
+      type: object
+      properties:
+        workspace: { $ref: "#/components/schemas/Workspace" }
+    CreateWorkspaceRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 2, maxLength: 120 }
+        slug: { type: string, pattern: "^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$" }
+        timezone: { type: string }
+        locale: { type: string }
+    UpdateWorkspaceRequest:
+      type: object
+      properties:
+        name: { type: string }
+        timezone: { type: string }
+        locale: { type: string }
+    Role:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        code: { type: string }
+        name: { type: string }
+        description: { type: string, nullable: true }
+        is_system: { type: boolean }
+        permissions:
+          type: array
+          items: { type: string }
+    RoleRequest:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        description: { type: string }
+        permissions:
+          type: array
+          items: { type: string }
+    RoleAssignmentRequest:
+      type: object
+      required: [role_id]
+      properties:
+        role_id: { type: string, format: uuid }
+        company_id: { type: string, format: uuid, nullable: true }
+        branch_id: { type: string, format: uuid, nullable: true }
+    Invitation:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        role_id: { type: string, format: uuid }
+        role_code: { type: string }
+        role_name: { type: string }
+        status: { type: string, enum: [pending, accepted, revoked, expired] }
+        message: { type: string, nullable: true }
+        expires_at: { type: string, format: date-time }
+        invited_by: { type: string, format: uuid }
+        inviter_name: { type: string }
+        created_at: { type: string, format: date-time }
+    CreateInvitationRequest:
+      type: object
+      required: [email, role_id]
+      properties:
+        email: { type: string, format: email }
+        role_id: { type: string, format: uuid }
+        message: { type: string, maxLength: 500 }
+    OnboardingStatus:
+      type: object
+      properties:
+        ready: { type: boolean }
+        completed: { type: integer }
+        mandatory: { type: integer }
+        checklist:
+          type: array
+          items:
+            type: object
+            properties:
+              key: { type: string }
+              label: { type: string }
+              mandatory: { type: boolean }
+              complete: { type: boolean }
+              message: { type: string }
+    Company:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        tenant_id: { type: string, format: uuid }
+        trade_name: { type: string }
+        legal_name: { type: string, nullable: true }
+        business_type: { type: string }
+        gst_profile: { type: string, enum: [not_registered, registered] }
+        email: { type: string, nullable: true }
+        phone: { type: string, nullable: true }
+        address_line1: { type: string, nullable: true }
+        city: { type: string, nullable: true }
+        district: { type: string, nullable: true }
+        state_code: { type: string, nullable: true }
+        postal_code: { type: string, nullable: true }
+        country_code: { type: string }
+        base_currency: { type: string }
+        timezone: { type: string }
+        is_primary: { type: boolean }
+        status: { type: string }
+        created_at: { type: string, format: date-time }
+        row_version: { type: integer }
+    CompanyResult:
+      type: object
+      properties:
+        company: { $ref: "#/components/schemas/Company" }
+        tax_registration:
+          allOf:
+            - $ref: "#/components/schemas/TaxRegistration"
+          nullable: true
+    CreateCompanyRequest:
+      type: object
+      required: [trade_name, business_type, gst_profile]
+      properties:
+        trade_name: { type: string }
+        legal_name: { type: string }
+        business_type:
+          type: string
+          enum: [proprietorship, partnership, llp, private_limited, public_limited, huf, trust, other]
+        email: { type: string }
+        phone: { type: string }
+        address_line1: { type: string }
+        address_line2: { type: string }
+        city: { type: string }
+        district: { type: string }
+        state_code: { type: string }
+        postal_code: { type: string }
+        gst_profile: { type: string, enum: [not_registered, registered] }
+        registration_type: { type: string, enum: [regular, composition] }
+        gstin: { type: string, minLength: 15, maxLength: 15 }
+        registration_state: { type: string }
+        invoice_prefix: { type: string }
+        number_padding: { type: integer, minimum: 1, maximum: 10 }
+        starting_number: { type: integer, minimum: 1 }
+    UpdateCompanyRequest:
+      type: object
+      required: [row_version]
+      properties:
+        trade_name: { type: string }
+        legal_name: { type: string }
+        email: { type: string }
+        phone: { type: string }
+        address_line1: { type: string }
+        address_line2: { type: string }
+        city: { type: string }
+        district: { type: string }
+        state_code: { type: string }
+        postal_code: { type: string }
+        row_version: { type: integer }
+    TaxRegistration:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        gstin: { type: string, nullable: true }
+        state_code: { type: string }
+        registration_type: { type: string }
+        legal_name: { type: string, nullable: true }
+        trade_name: { type: string, nullable: true }
+        address_line1: { type: string, nullable: true }
+        city: { type: string, nullable: true }
+        district: { type: string, nullable: true }
+        postal_code: { type: string, nullable: true }
+        country_code: { type: string }
+        valid_from: { type: string, format: date-time }
+        is_default: { type: boolean }
+        status: { type: string }
+    TaxRegistrationRequest:
+      type: object
+      required: [state_code, registration_type]
+      properties:
+        gstin: { type: string, minLength: 15, maxLength: 15 }
+        state_code: { type: string }
+        registration_type: { type: string, enum: [regular, composition] }
+        legal_name: { type: string }
+        trade_name: { type: string }
+        address_line1: { type: string }
+        city: { type: string }
+        district: { type: string }
+        postal_code: { type: string }
+        valid_from: { type: string, format: date }
